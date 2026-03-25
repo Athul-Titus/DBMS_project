@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
-import mysql.connector
+import sqlite3
+import re
 from datetime import datetime, date
 import hashlib
 from functools import wraps
@@ -10,11 +11,31 @@ app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'your_secret_key_here')  # Use environment variable
 
 # Database connection configuration
+
+class SqliteCursorWrapper:
+    def __init__(self, cursor):
+        self.cursor = cursor
+        
+    def execute(self, query, params=None):
+        query = query.replace('%s', '?')
+        if params:
+            return self.cursor.execute(query, params)
+        return self.cursor.execute(query)
+        
+    def fetchone(self): return self.cursor.fetchone()
+    def fetchall(self): return self.cursor.fetchall()
+    def close(self): self.cursor.close()
+    
+def get_cursor(db):
+    return SqliteCursorWrapper(db.cursor())
+
 def get_db_connection():
     try:
-        connection = mysql.connector.connect(**DATABASE_CONFIG)
+        connection = sqlite3.connect('placement.db')
+        # We need a custom cursor or to replace %s with ? globally to make queries work.
+        # SQLite doesn't understand %s.
         return connection
-    except mysql.connector.Error as err:
+    except Exception as err:
         print(f"Database connection error: {err}")
         raise
 
@@ -57,7 +78,7 @@ def health_check():
     """Health check endpoint for deployment monitoring"""
     try:
         db = get_db_connection()
-        cursor = db.cursor()
+        cursor = get_cursor(db)
         cursor.execute("SELECT 1")
         cursor.fetchone()
         cursor.close()
@@ -75,7 +96,7 @@ def login(user_type=None):
         password = request.form['password']
         
         db = get_db_connection()
-        cursor = db.cursor()
+        cursor = get_cursor(db)
         
         try:
             if user_type == 'student':
@@ -125,7 +146,7 @@ def student_login():
             password = request.form['password']
             
             db = get_db_connection()
-            cursor = db.cursor()
+            cursor = get_cursor(db)
             
             try:
                 cursor.execute("SELECT student_id, name, email FROM Student WHERE email = %s AND password = %s", 
@@ -161,7 +182,7 @@ def student_login():
                 return render_template('student_login.html')
             
             db = get_db_connection()
-            cursor = db.cursor()
+            cursor = get_cursor(db)
             
             try:
                 # Check if email already exists
@@ -199,7 +220,7 @@ def admin_login():
             password = request.form['password']
             
             db = get_db_connection()
-            cursor = db.cursor()
+            cursor = get_cursor(db)
             
             try:
                 cursor.execute("SELECT admin_id, full_name, username FROM Admin WHERE username = %s AND password = %s", 
@@ -232,7 +253,7 @@ def admin_login():
                 return render_template('admin_login.html')
             
             db = get_db_connection()
-            cursor = db.cursor()
+            cursor = get_cursor(db)
             
             try:
                 # Check if username already exists
@@ -273,7 +294,7 @@ def admin_login():
 @student_required
 def student_dashboard():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Get student's applications with job and company details and current round status
@@ -363,7 +384,7 @@ def student_dashboard():
 @student_required
 def student_profile():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("SELECT * FROM Student WHERE student_id = %s", (session['user_id'],))
@@ -381,7 +402,7 @@ def student_profile():
 @student_required
 def update_student_profile():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("""
@@ -404,7 +425,7 @@ def update_student_profile():
 @student_required
 def apply_for_job(job_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Check if already applied
@@ -447,7 +468,7 @@ def apply_for_job(job_id):
 @student_required
 def job_details(job_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Get detailed job information
@@ -516,7 +537,7 @@ def apply_for_job_detailed(job_id):
     from werkzeug.utils import secure_filename
     
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Check if already applied
@@ -622,7 +643,7 @@ def apply_for_job_detailed(job_id):
 @student_required
 def student_interviews():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("""
@@ -650,7 +671,7 @@ def student_interviews():
 @student_required
 def student_notifications():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Get all notifications for the student
@@ -685,7 +706,7 @@ def student_notifications():
 @admin_required
 def admin_dashboard():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Get statistics
@@ -732,7 +753,7 @@ def admin_dashboard():
 @admin_required
 def manage_students():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("SELECT * FROM Student ORDER BY name")
@@ -750,7 +771,7 @@ def manage_students():
 @admin_required
 def manage_companies():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("SELECT * FROM Company ORDER BY company_name")
@@ -768,7 +789,7 @@ def manage_companies():
 @admin_required
 def add_company():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("""
@@ -798,7 +819,7 @@ def add_company_form():
     elif request.method == 'POST':
         # Handle form submission (same as existing add_company logic)
         db = get_db_connection()
-        cursor = db.cursor()
+        cursor = get_cursor(db)
         
         try:
             cursor.execute("""
@@ -828,7 +849,7 @@ def add_student_form():
     elif request.method == 'POST':
         # Handle form submission
         db = get_db_connection()
-        cursor = db.cursor()
+        cursor = get_cursor(db)
         
         try:
             # Hash the password
@@ -857,7 +878,7 @@ def add_student_form():
 @admin_required
 def manage_jobs():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("""
@@ -887,7 +908,7 @@ def manage_jobs():
 @admin_required
 def add_job():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("""
@@ -917,7 +938,7 @@ def add_job_form():
     if request.method == 'GET':
         # Show the add job form
         db = get_db_connection()
-        cursor = db.cursor()
+        cursor = get_cursor(db)
         try:
             cursor.execute("SELECT company_id, company_name FROM Company ORDER BY company_name")
             companies = cursor.fetchall()
@@ -932,7 +953,7 @@ def add_job_form():
     elif request.method == 'POST':
         # Handle form submission (same as existing add_job logic)
         db = get_db_connection()
-        cursor = db.cursor()
+        cursor = get_cursor(db)
         
         try:
             salary_package = request.form.get('salary_package')
@@ -966,7 +987,7 @@ def add_job_form():
 @admin_required
 def manage_applications():
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("""
@@ -994,7 +1015,7 @@ def manage_applications():
 @admin_required
 def schedule_interview(app_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     # Get the round type from query parameter (only Technical or HR)
     round_name = request.args.get('round', 'Technical')
@@ -1087,7 +1108,7 @@ def schedule_interview(app_id):
 @admin_required
 def update_screening_round(app_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     # Get the round type from query parameter
     round_name = request.args.get('round', 'Round1')
@@ -1192,7 +1213,7 @@ def update_screening_round(app_id):
 @admin_required
 def update_interview_status(round_id, status):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("""
@@ -1217,7 +1238,7 @@ def update_interview_status(round_id, status):
 @admin_required
 def application_details(app_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Get application details
@@ -1265,7 +1286,7 @@ def application_details(app_id):
 @admin_required
 def update_application_status(app_id, status):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Update both current_round and overall_status based on the status
@@ -1301,7 +1322,7 @@ def view_resume(app_id):
     import os
     
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         cursor.execute("""
@@ -1350,7 +1371,7 @@ def view_resume(app_id):
 @admin_required
 def update_student(student_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     if request.method == 'GET':
         try:
@@ -1400,7 +1421,7 @@ def update_student(student_id):
 @admin_required
 def delete_student(student_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Check if student has applications
@@ -1428,7 +1449,7 @@ def delete_student(student_id):
 @admin_required
 def update_company(company_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     if request.method == 'GET':
         try:
@@ -1477,7 +1498,7 @@ def update_company(company_id):
 @admin_required
 def delete_company(company_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Check if company has jobs
@@ -1505,7 +1526,7 @@ def delete_company(company_id):
 @admin_required
 def update_job(job_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     if request.method == 'GET':
         try:
@@ -1573,7 +1594,7 @@ def update_job(job_id):
 @admin_required
 def delete_job(job_id):
     db = get_db_connection()
-    cursor = db.cursor()
+    cursor = get_cursor(db)
     
     try:
         # Check if job has applications
